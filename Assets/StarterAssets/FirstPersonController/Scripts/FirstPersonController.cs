@@ -1,6 +1,7 @@
 ﻿using UnityEngine;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
+using UnityEngine.Events;
 #endif
 
 namespace StarterAssets
@@ -20,6 +21,8 @@ namespace StarterAssets
 		public float RotationSpeed = 1.0f;
 		[Tooltip("Acceleration and deceleration")]
 		public float SpeedChangeRate = 10.0f;
+		[Tooltip("The distance that the player can pick things up from")]
+		public float PickupDistance = 4.0f;
 
 		[Space(10)]
 		[Tooltip("The height the player can jump")]
@@ -32,8 +35,10 @@ namespace StarterAssets
 		public float JumpTimeout = 0.1f;
 		[Tooltip("Time required to pass before entering the fall state. Useful for walking down stairs")]
 		public float FallTimeout = 0.15f;
+		[Tooltip("Time required to pass before being able to attempt to pickup an object again. Set to 0f to instantly pickup")]
+		public float PickupTimeout = 0.1f;
 
-		[Header("Player Grounded")]
+        [Header("Player Grounded")]
 		[Tooltip("If the character is grounded or not. Not part of the CharacterController built in grounded check")]
 		public bool Grounded = true;
 		[Tooltip("Useful for rough ground")]
@@ -51,6 +56,38 @@ namespace StarterAssets
 		[Tooltip("How far in degrees can you move the camera down")]
 		public float BottomClamp = -90.0f;
 
+		//NGL I wanted an excuse to learn unity events but they're just delegates but easier lol
+		public UnityEvent <uint, uint>OnDamageTaken = new UnityEvent<uint, uint>();
+		public UnityEvent<int>OnScoreUpdated = new UnityEvent<int>();
+		public UnityEvent<bool>OnGameOver = new UnityEvent<bool>();
+
+		private int _score = 0;
+		public int Score
+		{
+			get
+			{
+				return _score;
+			}
+		}
+		private uint _health = 100;
+		public uint Health
+		{
+			get 
+			{ 
+				return _health;
+			}
+			private set
+			{
+				if(_health > 0)
+				{
+                    _health = value;
+                }
+			}
+		}
+		public uint MaxHealth { get; private set; } = 100;
+
+		private bool gameOver => Health <= 0 || _score >= 10; 
+
 		// cinemachine
 		private float _cinemachineTargetPitch;
 
@@ -63,8 +100,10 @@ namespace StarterAssets
 		// timeout deltatime
 		private float _jumpTimeoutDelta;
 		private float _fallTimeoutDelta;
-
+		private float _pickupTimeoutDelta;
 	
+
+
 #if ENABLE_INPUT_SYSTEM
 		private PlayerInput _playerInput;
 #endif
@@ -108,18 +147,29 @@ namespace StarterAssets
 			// reset our timeouts on start
 			_jumpTimeoutDelta = JumpTimeout;
 			_fallTimeoutDelta = FallTimeout;
+			_pickupTimeoutDelta = PickupTimeout;
+			OnDamageTaken.Invoke(Health, MaxHealth);
+			OnScoreUpdated.Invoke(Score);
+
 		}
 
 		private void Update()
 		{
-			JumpAndGravity();
-			GroundedCheck();
-			Move();
+			if(!gameOver)
+			{
+                HandlePickup();
+                JumpAndGravity();
+                GroundedCheck();
+                Move();
+            }
 		}
 
 		private void LateUpdate()
 		{
-			CameraRotation();
+			if(!gameOver)
+			{
+                CameraRotation();
+            }
 		}
 
 		private void GroundedCheck()
@@ -197,7 +247,37 @@ namespace StarterAssets
 			// move the player
 			_controller.Move(inputDirection.normalized * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 		}
-
+		private void HandlePickup()
+		{
+			
+			if(_input.pickup && _pickupTimeoutDelta <= 0.0f)
+			{
+				_pickupTimeoutDelta = PickupTimeout;
+				//Attempt pickup
+				//Make the raycast and draw a debug line to represent it
+				Physics.Raycast(CinemachineCameraTarget.transform.position, CinemachineCameraTarget.transform.forward, out RaycastHit raycastInfo, PickupDistance);
+				if(raycastInfo.collider != null)
+				{
+					//Debug.Log(raycastInfo.collider.gameObject.name);
+					//Debug.DrawLine(CinemachineCameraTarget.transform.position, raycastInfo.point, Color.red, 1f);
+					if(raycastInfo.collider.gameObject.tag == "Pickup")
+					{
+						Destroy(raycastInfo.collider.gameObject);
+						_score++;
+						OnScoreUpdated.Invoke(Score);
+						if(gameOver)
+						{
+							OnGameOver.Invoke(true);
+						}
+					}
+                }
+            }
+            if (_pickupTimeoutDelta >= 0.0f)
+			{
+				_input.pickup = false;
+				_pickupTimeoutDelta -= Time.deltaTime;
+			}
+		}
 		private void JumpAndGravity()
 		{
 			if (Grounded)
@@ -264,5 +344,23 @@ namespace StarterAssets
 			// when selected, draw a gizmo in the position of, and matching radius of, the grounded collider
 			Gizmos.DrawSphere(new Vector3(transform.position.x, transform.position.y - GroundedOffset, transform.position.z), GroundedRadius);
 		}
-	}
+
+        public void OnControllerColliderHit(ControllerColliderHit hit)
+        {
+			if(hit.gameObject.tag == "Trap")
+			{
+
+				Health -= 50;
+				OnDamageTaken.Invoke(Health, MaxHealth);
+				if(gameOver)
+				{
+					OnGameOver.Invoke(false);
+				}
+				//Need to do this otherwise it triggers again before destroy can kick in
+				hit.gameObject.tag = "Untagged";
+                Debug.Log(_health);
+				Destroy(hit.gameObject);
+			}
+        }
+    }
 }
